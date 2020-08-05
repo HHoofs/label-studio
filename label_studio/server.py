@@ -1,5 +1,10 @@
+import glob
+import hashlib
 import os
 import io
+import pathlib
+from os.path import join
+
 import lxml
 import time
 import shutil
@@ -8,6 +13,12 @@ import pandas as pd
 import logging
 import logging.config
 import traceback as tb
+import sys
+
+# sys.path.append('.')
+from confidence import load_name
+
+from label_studio.utils.db import get_db
 
 try:
     import ujson as json
@@ -24,7 +35,7 @@ from datetime import datetime
 from inspect import currentframe, getframeinfo
 from flask import (
     request, jsonify, make_response, Response, Response as HttpResponse,
-    send_file, session, redirect
+    send_file, session, redirect, g
 )
 from flask_api import status
 from types import SimpleNamespace
@@ -48,9 +59,13 @@ from label_studio.storage import get_storage_form
 
 from label_studio.project import Project
 from label_studio.tasks import Tasks
-from label_studio.utils.auth import requires_auth
+from label_studio.utils.auth import requires_auth, check_auth
 
 logger = logging.getLogger(__name__)
+
+
+conf = load_name('labelstudio')
+input_args = parse_input_args()
 
 
 def create_app():
@@ -69,6 +84,14 @@ def create_app():
 
 
 app = create_app()
+
+# this will run before each request
+@app.before_request
+def before_request() -> None:
+    """
+    Activates database connection using get_db
+    """
+    get_db(conf.database.get(input_args.db))
 
 
 # input arguments
@@ -259,14 +282,13 @@ def setup_page():
     )
 
 
-@app.route('/import')
+@app.route('/import', methods=('GET', 'POST'))
 @requires_auth
 @exception_treatment_page
 def import_page():
     """ Import tasks from JSON, CSV, ZIP and more
     """
     project = project_get_or_create()
-
     project.analytics.send(getframeinfo(currentframe()).function)
     return flask.render_template(
         'import.html',
@@ -275,7 +297,69 @@ def import_page():
     )
 
 
-@app.route('/export')
+@app.route('/postgres', methods=('GET', 'POST'))
+@requires_auth
+@exception_treatment_page
+def postgres_page():
+    """ Import tasks from JSON, CSV, ZIP and more
+    """
+    project = project_get_or_create()
+
+    if request.form.get('import'):
+        pathlib.Path(join(project.path, 'input')).mkdir(parents=True, exist_ok=True)
+        import collections
+        with g.db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT corpus.* 
+                FROM corpus 
+                    LEFT JOIN completions ON corpus.md5_hash = completions.md5_hash
+                WHERE completions.username != %s OR completions.username IS NULL                
+                ORDER BY RANDOM() 
+                LIMIT %s
+                """, (conf.username, request.form.get('number_text'), ))
+            for row in cur.fetchall():
+                with open(join(project.path, 'input', row['md5_hash'] + '.txt'), 'wb') as out_file:
+                    print(row['text_content'])
+                    out_file.write(row['text_content'].encode('utf-8'))
+        args = collections.namedtuple('args', ['input_format'])
+        tasks = project._load_tasks(join(project.path, 'input'), args('text-dir'),
+                                    project.config.get('label_config'))
+        with io.open(project.config.get('input_path'), mode='w') as fout:
+            json.dump(tasks, fout, indent=2)
+
+    if request.form.get('run'):
+        tasks = glob.glob(join(project.path, 'completions', '*.json'))
+
+        with g.db.cursor() as cur:
+            for task in tasks:
+                with open(task) as json_f:
+                    completion = json.load(json_f)
+                    completion_annotation = completion['completions'][0]
+                    if completion_annotation.get('skipped', False) or completion_annotation.get('was_cancelled', False):
+                        continue
+                    cur.execute('INSERT INTO COMPLETIONS(MD5_HASH, COMPLETION, USERNAME) VALUES (%s, %s, %s)',
+                                (hashlib.md5(completion['data']['text'].encode('utf-8')).hexdigest(),
+                                 json.dumps({'result': completion_annotation['result']}),
+                                 conf.username, ))
+
+        if os.path.exists(join(project.path, 'input')):
+            shutil.rmtree(join(project.path, 'input'))
+        project.delete_tasks()
+
+
+    project.analytics.send(getframeinfo(currentframe()).function)
+    return flask.render_template(
+        'postgres.html',
+        config=project.config,
+        project=project,
+        tasks_present=project.no_tasks(),
+        tasks_left=len(project.source_storage.ids()),
+        tasks_done=len(project.get_completions_ids())
+    )
+
+
+@app.route('/export', methods=('GET', 'POST'))
 @requires_auth
 @exception_treatment_page
 def export_page():

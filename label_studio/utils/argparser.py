@@ -99,6 +99,9 @@ def parse_input_args():
         '-p', '--port', dest='port', type=int,
         help='Server port')
     root_parser.add_argument(
+        '--db', dest='db', type=str,
+        help='database-name')
+    root_parser.add_argument(
         '--allow-serving-local-files', dest='allow_serving_local_files', action='store_true',
         help='Allow serving local files (Warning! use this option only for your local runs)')
 

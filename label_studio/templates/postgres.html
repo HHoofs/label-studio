@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block body %}
+
+<div align="center">
+     <form method="post">
+      {% if tasks_present %}
+         Import a number of (randomly selected) texts, to start labelling:
+                  <br>
+
+      <input type="number" name="number_text" value="10" min="1" required="required">
+      <input type="submit" name="import", value="Import">
+      {% else %}
+         There are <b>{{tasks_left}}</b> tasks ready to be labeled, continue:
+         <div class="center aligned action-buttons">
+                  <!-- Start labeling -->
+
+                  <a class="ui button positive" href="/">Start Labeling</a>
+         </div>
+         <br>
+         Or export the <b>{{tasks_done}}</b> tasks already completed (also removing the uncompleted tasks):
+                  <div class="center aligned action-buttons">
+      <input type="submit" name="run" value="Export to database">
+                               </div>
+      {% endif %}
+  </form>
+</div>
+
+{% endblock %}
